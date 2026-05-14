@@ -1,0 +1,181 @@
+grammar;
+
+extern {
+    type Location = usize;
+    type Error = String;
+
+    enum Token {
+        "vector" => Vector,
+        "wallet" => Wallet,
+        "bind" => Bind,
+        "certify" => Certify,
+        "transfer" => Transfer,
+        "drain" => Drain,
+        "project" => Project,
+        "reconstruct" => Reconstruct,
+        "query" => Query,
+        "record" => Record,
+        "contract" => Contract,
+        "action" => Action,
+        "with" => With,
+        "to" => To,
+        "amount" => Amount,
+        "by" => By,
+        "into" => Into,
+        "from" => From,
+        "policy" => Policy,
+        "ctx" => Ctx,
+        "space" => Space,
+        "op" => Op,
+        "risk" => Risk,
+        "threshold_version" => ThresholdVersion,
+        "outcome" => Outcome,
+        "gain" => Gain,
+        "loss" => Loss,
+        "partial" => Partial,
+        "release" => Release,
+        "staged" => Staged,
+        "as" => As,
+        "{" => LBrace,
+        "}" => RBrace,
+        "(" => LParen,
+        ")" => RParen,
+        ":" => Colon,
+        ";" => Semi,
+        "," => Comma,
+        "." => Dot,
+        "=" => Eq,
+        Ident => Ident(String),
+        Integer => Integer(u128),
+        String => String(String),
+    }
+}
+
+Program: Vec<Statement> = {
+    <mut stmts:Statements> => stmts,
+};
+
+Statements: Vec<Statement> = {
+    => Vec::new(),
+    <mut stmts:Statements> <stmt:Statement> => { stmts.push(stmt); stmts },
+};
+
+Statement: Statement = {
+    <v:VectorDecl> => Statement::VectorDecl(v),
+    <w:WalletDecl> => Statement::WalletDecl(w),
+    <c:CertifyStmt> => Statement::Certify(c),
+    <t:TransferStmt> => Statement::Transfer(t),
+    <d:DrainStmt> => Statement::Drain(d),
+    <p:ProjectStmt> => Statement::Project(p),
+    <r:ReconstructStmt> => Statement::Reconstruct(r),
+    <q:QueryStmt> => Statement::Query(q),
+    <rec:RecordStmt> => Statement::Record(rec),
+    <c:ContractDecl> => Statement::Contract(c),
+};
+
+VectorDecl: VectorDecl = {
+    Token::Vector <name:Ident> Token::Colon <ty:VectorTypeLit> Token::Eq <lit:VectorLiteral> Token::Semi
+        => VectorDecl { name, vector_type: ty, components: lit },
+};
+
+WalletDecl: WalletDecl = {
+    Token::Wallet <name:Ident> Token::Eq Token::Bind Token::LParen <pk:Scalar> Token::RParen Token::Semi
+        => WalletDecl { name, public_key: pk },
+};
+
+CertifyStmt: CertifyStmt = {
+    Token::Certify <target:Ident> Token::With <ctx:ContextExpr> Token::Semi
+        => CertifyStmt { target, context: ctx },
+};
+
+TransferStmt: TransferStmt = {
+    Token::Transfer <source:Ident> Token::To <destination:Ident> Token::Amount <amount:Expr>
+        <drain:DrainPart?> <policy:PolicyPart?> Token::Semi
+        => TransferStmt { source, destination, amount, drain, policy },
+};
+
+DrainStmt: DrainStmt = {
+    Token::Drain <target:Ident> Token::By <amount:Expr> Token::Semi
+        => DrainStmt { target, amount },
+};
+
+ProjectStmt: ProjectStmt = {
+    Token::Project <source:Ident> Token::Into <environment:Ident> Token::Amount <amount:Expr>
+        <policy:PolicyPart?> Token::Semi
+        => ProjectStmt { source, environment, amount, policy },
+};
+
+ReconstructStmt: ReconstructStmt = {
+    Token::Reconstruct <target:Ident> Token::From <projection_id:Ident> Token::Semi
+        => ReconstructStmt { target, projection_id },
+};
+
+QueryStmt: QueryStmt = {
+    Token::Query <expr:Expr> Token::Semi => QueryStmt { expr },
+};
+
+RecordStmt: RecordStmt = {
+    Token::Record <expr:Expr> Token::Semi => RecordStmt { expr },
+};
+
+ContractDecl: ContractDecl = {
+    Token::Contract <name:Ident> Token::LBrace <actions:ContractActions> Token::RBrace
+        => ContractDecl { name, actions },
+};
+
+ContractActions: Vec<ContractAction> = {
+    => Vec::new(),
+    <mut actions:ContractActions> <action:ContractAction> => { actions.push(action); actions },
+};
+
+ContractAction: ContractAction = {
+    Token::Action <name:Ident> <args:ActionArgs?> Token::Semi
+        => ContractAction { name, args: args.unwrap_or_default() },
+};
+
+ActionArgs: Vec<NamedArg> = {
+    Token::LParen <args:NamedArgs?> Token::RParen => args.unwrap_or_default(),
+};
+
+NamedArgs: Vec<NamedArg> = {
+    => Vec::new(),
+    <mut args:NamedArgs> Token::Comma <arg:NamedArg> => { args.push(arg); args },
+    <arg:NamedArg> => vec![arg],
+};
+
+NamedArg: NamedArg = {
+    <name:Ident> Token::Eq <value:Expr> => NamedArg { name: Some(name), value },
+    <value:Expr> => NamedArg { name: None, value },
+};
+
+DrainPart: Option<Expr> = {
+    Token::Drain <expr:Expr> => Some(expr),
+};
+
+PolicyPart: Option<Expr> = {
+    Token::Policy <expr:Expr> => Some(expr),
+};
+
+ContextExpr: ContextExpr = {
+    Token::Ctx Token::LParen <args:NamedArgs?> Token::RParen => ContextExpr::new(args.unwrap_or_default()),
+};
+
+VectorTypeLit: VectorType = {
+    Token::Ident(name) => VectorType::parse(&name).unwrap(),
+};
+
+VectorLiteral: Vec<u128> = {
+    Token::LParen <vals:IntegerList?> Token::RParen => vals.unwrap_or_default(),
+};
+
+IntegerList: Vec<u128> = {
+    => Vec::new(),
+    <mut vals:IntegerList> Token::Comma <v:Integer> => { vals.push(v); vals },
+    <v:Integer> => vec![v],
+};
+
+Expr: Expr = {
+    <i:Integer> => Expr::Integer(i),
+    <s:String> => Expr::String(s),
+    <i:Ident> => Expr::Ident(i),
+};

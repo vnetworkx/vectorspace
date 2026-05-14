@@ -1,0 +1,17 @@
+[package]
+name = "v-langx"
+version = "1.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Vector Language (v-langx): a deterministic front-end for Vector Network kernel operations."
+readme = "README.md"
+
+[lib]
+name = "v_langx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "v-langx"
+path = "src/main.rs"
+
+[dependencies]

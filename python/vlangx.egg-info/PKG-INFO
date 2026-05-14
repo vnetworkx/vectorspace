@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: vlangx
+Version: 1.1.0
+Summary: Python prototype tools for Vector Language
+Requires-Python: >=3.10

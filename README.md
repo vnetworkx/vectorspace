@@ -1,6 +1,3 @@
-Here is a stronger `README.md` draft you can commit. It is written to feel like a real project home page, not just a feature list.
-
-````md
 # Vector Space / v-langx
 
 Native Vector Language implementation for the Vector Network.

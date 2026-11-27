@@ -262,3 +262,35 @@ fn format_auth_ratio(basis_points: u128) -> String {
 fn compute_auth_ratio(ctx: &Context) -> String {
     format_auth_ratio(auth_ratio_basis_points(ctx))
 }
+
+#[cfg(test)]
+mod fixed_point_regressions {
+    use super::{auth_ratio_basis_points, compute_auth_ratio};
+    use crate::value::{Context, Value};
+
+    #[test]
+    fn empty_context_has_exact_half_ratio() {
+        assert_eq!(compute_auth_ratio(&Context::new()), "0.5000");
+        assert_eq!(auth_ratio_basis_points(&Context::new()), 5_000);
+    }
+
+    #[test]
+    fn normal_complete_context_is_exact_one() {
+        let ctx = Context::new()
+            .with("space", Value::String("global".to_string()))
+            .with("op", Value::String("transfer".to_string()))
+            .with("risk", Value::String("normal".to_string()));
+        assert_eq!(compute_auth_ratio(&ctx), "1.0000");
+        assert_eq!(auth_ratio_basis_points(&ctx), 10_000);
+    }
+
+    #[test]
+    fn high_risk_context_uses_exact_integer_weighting() {
+        let ctx = Context::new()
+            .with("space", Value::String("global".to_string()))
+            .with("op", Value::String("transfer".to_string()))
+            .with("risk", Value::String("high".to_string()));
+        assert_eq!(compute_auth_ratio(&ctx), "0.9500");
+        assert_eq!(auth_ratio_basis_points(&ctx), 9_500);
+    }
+}

@@ -78,41 +78,71 @@ pub fn type_compatible_for_transfer(source: VectorType, destination: VectorType)
     )
 }
 
-fn component_allocation(components: &[u128], amount: u128) -> Vec<u128> {
-    let total: u128 = components.iter().copied().sum();
-    if total == 0 || amount == 0 {
-        return vec![0; components.len()];
+fn component_allocation(components: &[u128], amount: u128) -> Result<Vec<u128>, RuntimeError> {
+    let total = components.iter().try_fold(0u128, |sum, component| {
+        sum.checked_add(*component).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector component total overflow".to_string(),
+            ))
+        })
+    })?;
+    if amount == 0 {
+        return Ok(vec![0; components.len()]);
+    }
+    if total == 0 {
+        return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "cannot allocate a positive amount from a zero vector".to_string(),
+        )));
     }
 
     let mut floors = Vec::with_capacity(components.len());
     let mut remainders = Vec::with_capacity(components.len());
-
     let mut allocated = 0u128;
     for (idx, &component) in components.iter().enumerate() {
-        let numerator = amount.saturating_mul(component);
+        let numerator = amount.checked_mul(component).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation multiplication overflow".to_string(),
+            ))
+        })?;
         let floor = numerator / total;
         let rem = numerator % total;
         floors.push(floor);
         remainders.push((idx, rem));
-        allocated = allocated.saturating_add(floor);
+        allocated = allocated.checked_add(floor).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation total overflow".to_string(),
+            ))
+        })?;
     }
 
-    let mut remaining = amount.saturating_sub(allocated);
+    let mut remaining = amount.checked_sub(allocated).ok_or_else(|| {
+        RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "vector allocation exceeded requested amount".to_string(),
+        ))
+    })?;
     remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     for (idx, _) in remainders {
         if remaining == 0 {
             break;
         }
-        floors[idx] = floors[idx].saturating_add(1);
+        floors[idx] = floors[idx].checked_add(1).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation component overflow".to_string(),
+            ))
+        })?;
         remaining -= 1;
     }
-
-    floors
+    if remaining != 0 {
+        return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "vector allocation could not distribute the requested amount".to_string(),
+        )));
+    }
+    Ok(floors)
 }
 
 fn vector_subtract(components: &[u128], amount: u128) -> Result<Vec<u128>, RuntimeError> {
-    let allocation = component_allocation(components, amount);
+    let allocation = component_allocation(components, amount)?;
     let mut out = Vec::with_capacity(components.len());
     for (component, dec) in components.iter().zip(allocation.iter()) {
         if component < dec {
@@ -131,13 +161,20 @@ fn vector_add_strict(components: &[u128], addition: &[u128]) -> Result<Vec<u128>
             "vector dimensions must match".to_string(),
         )));
     }
-    Ok(components
+    components
         .iter()
         .zip(addition.iter())
-        .map(|(a, b)| a.saturating_add(*b))
-        .collect())
+        .map(|(a, b)| {
+            a.checked_add(*b).ok_or_else(|| {
+                RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "vector component addition overflow".to_string(),
+                ))
+            })
+        })
+        .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn canonical_record(
     state: &mut NetworkState,
     entity_id: &str,
@@ -150,10 +187,10 @@ fn canonical_record(
     certified: bool,
     actor_pk: &str,
     proof: &str,
-) -> Event {
+) -> Result<Event, RuntimeError> {
     let eid = format!("evt_{:016x}", state.events.len() + 1);
-    let logical_clock = state.next_clock();
-    let timestamp = derive_timestamp(logical_clock);
+    let logical_clock = state.next_clock()?;
+    let timestamp = derive_timestamp(logical_clock)?;
     let parent_hashes = state.last_event_hash.clone().into_iter().collect::<Vec<_>>();
     let provisional_signature = derive_signature(
         &format!("{eid}:{actor_pk}:{logical_clock}"),
@@ -198,7 +235,7 @@ fn canonical_record(
     );
     let event_hash = derive_event_hash(&final_payload);
 
-    Event {
+    Ok(Event {
         eid,
         parent_hashes,
         region_id: region_id.to_string(),
@@ -215,9 +252,10 @@ fn canonical_record(
         timestamp,
         signature,
         event_hash,
-    }
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_state_event(
     state: &mut NetworkState,
     entity_id: &str,
@@ -230,7 +268,7 @@ fn push_state_event(
     certified: bool,
     actor_pk: &str,
     proof: &str,
-) -> Event {
+ ) -> Result<Event, RuntimeError> {
     let event = canonical_record(
         state,
         entity_id,
@@ -243,12 +281,20 @@ fn push_state_event(
         certified,
         actor_pk,
         proof,
-    );
+    )?;
     state.push_event(event.clone());
-    event
+    Ok(event)
 }
 
 pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<KernelResult, RuntimeError> {
+    // Public single-operation execution is transactional as well as program execution.
+    let mut staged = state.clone();
+    let result = execute_kernel_op_inner(&mut staged, op)?;
+    *state = staged;
+    Ok(result)
+}
+
+fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<KernelResult, RuntimeError> {
     match op {
         KernelOp::CreateVector { name, vector_type, components } => {
             if state.vectors.contains_key(&name) {
@@ -276,7 +322,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "origin-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("created {name}")), record: Some(event) })
         }
         KernelOp::BindWallet { name, public_key } => {
@@ -297,7 +343,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 &public_key,
                 "wallet-binding",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("wallet {name} bound")), record: Some(event) })
         }
         KernelOp::Certify { target, context, auth_ratio, certified } => {
@@ -329,10 +375,20 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 certified,
                 "kernel",
                 "certification-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("certify {target} -> {certified}")), record: Some(event) })
         }
         KernelOp::Transfer { source, destination, amount, drain, policy } => {
+            if source == destination {
+                return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "self-transfer is not supported".to_string(),
+                )));
+            }
+            if drain > amount {
+                return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "transfer drain cannot exceed transfer amount".to_string(),
+                )));
+            }
             let (source_type, dest_type, before_source, before_dest) = {
                 let source_vec = state
                     .vectors
@@ -364,8 +420,8 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
             }
 
             let after_source = vector_subtract(&before_source, amount)?;
-            let received_amount = amount.saturating_sub(drain);
-            let received = component_allocation(&before_source, received_amount);
+            let received_amount = amount - drain;
+            let received = component_allocation(&before_source, received_amount)?;
             let after_dest = vector_add_strict(&before_dest, &received)?;
 
             {
@@ -400,7 +456,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "transfer-proof",
-            );
+            )?;
 
             let _dest_event = push_state_event(
                 state,
@@ -414,7 +470,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "transfer-proof",
-            );
+            )?;
 
             Ok(KernelResult {
                 output: Some(format!("transfer {source}->{destination} amount={amount} drain={drain}")),
@@ -449,7 +505,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "drain-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("drain {target} amount={amount}")), record: Some(event) })
         }
         KernelOp::Project { source, environment, amount, policy, projection_id } => {
@@ -460,7 +516,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                     .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::UnknownSymbol(source.clone())))?;
                 vec.components.clone()
             };
-            let locked = component_allocation(&before, amount);
+            let locked = component_allocation(&before, amount)?;
             let remainder = vector_subtract(&before, amount)?;
             {
                 let vec = state
@@ -495,7 +551,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "project-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("project {source} -> {projection_id}")), record: Some(event) })
         }
         KernelOp::Reconstruct { target, projection_id } => {
@@ -540,7 +596,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "reconstruct-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("reconstruct {target} from {projection_id}")), record: Some(event) })
         }
         KernelOp::Query { expr } => Ok(KernelResult { output: Some(expr), record: None }),
@@ -568,7 +624,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "contract-proof",
-            );
+            )?;
             Ok(KernelResult { output: Some(format!("contract {name} deployed")), record: Some(event) })
         }
         KernelOp::ContractAction { contract, action, args } => {
@@ -591,11 +647,69 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "contract-action-proof",
-            );
+            )?;
             Ok(KernelResult {
                 output: Some(format!("contract action {}::{}", contract_name, action)),
                 record: Some(event),
             })
         }
+    }
+}
+
+
+#[cfg(test)]
+mod arithmetic_regressions {
+    use super::{component_allocation, vector_add_strict};
+    use crate::error::RuntimeErrorKind;
+
+    #[test]
+    fn allocation_rejects_component_sum_overflow() {
+        let err = component_allocation(&[u128::MAX, 1], 1).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn positive_allocation_from_zero_vector_is_rejected() {
+        let err = component_allocation(&[0, 0, 0], 1).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn allocation_rejects_multiplication_overflow() {
+        let err = component_allocation(&[u128::MAX], u128::MAX).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn vector_addition_rejects_overflow_instead_of_saturating() {
+        let err = vector_add_strict(&[u128::MAX], &[1]).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+}
+
+
+#[cfg(test)]
+mod atomic_single_operation_regressions {
+    use super::{execute_kernel_op, KernelOp};
+    use crate::ast::VectorType;
+    use crate::state::NetworkState;
+
+    #[test]
+    fn event_clock_overflow_does_not_leave_partial_operation_state() {
+        let mut state = NetworkState::new();
+        state.logical_clock = u64::MAX;
+        let before = state.clone();
+        let result = execute_kernel_op(
+            &mut state,
+            KernelOp::CreateVector {
+                name: "must-not-commit".to_string(),
+                vector_type: VectorType::Free,
+                components: vec![1, 2, 3],
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(state.vectors.len(), before.vectors.len());
+        assert_eq!(state.events.len(), before.events.len());
+        assert_eq!(state.logical_clock, before.logical_clock);
     }
 }

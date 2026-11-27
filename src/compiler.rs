@@ -130,7 +130,7 @@ pub fn compile_program(program: &Program) -> Result<CompilationUnit, RuntimeErro
                 });
             }
             Statement::Transfer(t) => {
-                let mut env = BTreeMap::new();
+                let env = BTreeMap::new();
                 let amount = eval_int(&t.amount, &env)?;
                 let drain = t
                     .drain

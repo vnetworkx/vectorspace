@@ -41,21 +41,26 @@ impl Runtime {
     }
 
     pub fn execute_ops(&mut self, ops: Vec<KernelOp>) -> Result<ExecutionReport, RuntimeError> {
+        // Execute against a private working copy. A failure at any operation leaves
+        // the caller-visible state and event history unchanged.
+        let mut working_state = self.state.clone();
         let mut outputs = Vec::new();
         let mut event_hashes = Vec::new();
 
         for op in ops {
             match op {
                 KernelOp::Query { expr } => {
-                    let resolved = self.resolve_query(&expr)?;
+                    let view = Runtime { state: working_state.clone() };
+                    let resolved = view.resolve_query(&expr)?;
                     outputs.push(format!("{expr} => {resolved}"));
                 }
                 KernelOp::Record { expr } => {
-                    let resolved = self.resolve_record(&expr)?;
+                    let view = Runtime { state: working_state.clone() };
+                    let resolved = view.resolve_record(&expr)?;
                     outputs.push(format!("{expr} => {resolved}"));
                 }
                 other => {
-                    let result = execute_kernel_op(&mut self.state, other)?;
+                    let result = execute_kernel_op(&mut working_state, other)?;
                     if let Some(out) = result.output {
                         outputs.push(out);
                     }
@@ -66,6 +71,7 @@ impl Runtime {
             }
         }
 
+        self.state = working_state;
         Ok(ExecutionReport {
             outputs,
             events: event_hashes,

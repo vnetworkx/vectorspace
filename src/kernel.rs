@@ -235,7 +235,7 @@ fn canonical_record(
     );
     let event_hash = derive_event_hash(&final_payload);
 
-    Event {
+    Ok(Event {
         eid,
         parent_hashes,
         region_id: region_id.to_string(),

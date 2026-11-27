@@ -86,8 +86,13 @@ fn component_allocation(components: &[u128], amount: u128) -> Result<Vec<u128>, 
             ))
         })
     })?;
-    if total == 0 || amount == 0 {
+    if amount == 0 {
         return Ok(vec![0; components.len()]);
+    }
+    if total == 0 {
+        return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "cannot allocate a positive amount from a zero vector".to_string(),
+        )));
     }
 
     let mut floors = Vec::with_capacity(components.len());
@@ -650,6 +655,12 @@ mod arithmetic_regressions {
     #[test]
     fn allocation_rejects_component_sum_overflow() {
         let err = component_allocation(&[u128::MAX, 1], 1).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn positive_allocation_from_zero_vector_is_rejected() {
+        let err = component_allocation(&[0, 0, 0], 1).unwrap_err();
         assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
     }
 

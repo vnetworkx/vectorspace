@@ -322,7 +322,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "origin-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("created {name}")), record: Some(event) })
         }
         KernelOp::BindWallet { name, public_key } => {
@@ -343,7 +343,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 &public_key,
                 "wallet-binding",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("wallet {name} bound")), record: Some(event) })
         }
         KernelOp::Certify { target, context, auth_ratio, certified } => {
@@ -375,7 +375,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 certified,
                 "kernel",
                 "certification-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("certify {target} -> {certified}")), record: Some(event) })
         }
         KernelOp::Transfer { source, destination, amount, drain, policy } => {
@@ -456,7 +456,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "transfer-proof",
-            )?
+            )?;
 
             let _dest_event = push_state_event(
                 state,
@@ -505,7 +505,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "drain-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("drain {target} amount={amount}")), record: Some(event) })
         }
         KernelOp::Project { source, environment, amount, policy, projection_id } => {
@@ -551,7 +551,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "project-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("project {source} -> {projection_id}")), record: Some(event) })
         }
         KernelOp::Reconstruct { target, projection_id } => {
@@ -596,7 +596,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "reconstruct-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("reconstruct {target} from {projection_id}")), record: Some(event) })
         }
         KernelOp::Query { expr } => Ok(KernelResult { output: Some(expr), record: None }),
@@ -624,7 +624,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "contract-proof",
-            )?
+            )?;
             Ok(KernelResult { output: Some(format!("contract {name} deployed")), record: Some(event) })
         }
         KernelOp::ContractAction { contract, action, args } => {
@@ -647,7 +647,7 @@ fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<Ker
                 true,
                 "kernel",
                 "contract-action-proof",
-            )?
+            )?;
             Ok(KernelResult {
                 output: Some(format!("contract action {}::{}", contract_name, action)),
                 record: Some(event),

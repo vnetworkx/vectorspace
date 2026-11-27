@@ -174,6 +174,7 @@ fn vector_add_strict(components: &[u128], addition: &[u128]) -> Result<Vec<u128>
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn canonical_record(
     state: &mut NetworkState,
     entity_id: &str,
@@ -254,6 +255,7 @@ fn canonical_record(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_state_event(
     state: &mut NetworkState,
     entity_id: &str,

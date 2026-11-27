@@ -121,7 +121,7 @@ pub fn compile_program(program: &Program) -> Result<CompilationUnit, RuntimeErro
                 context_text.push(')');
 
                 let ratio = compute_auth_ratio(&ctx);
-                let certified = ratio.parse::<f64>().unwrap_or(0.0) >= 0.8000;
+                let certified = auth_ratio_basis_points(&ctx) >= 8_000;
                 ops.push(KernelOp::Certify {
                     target: c.target.clone(),
                     context: context_text,
@@ -156,7 +156,11 @@ pub fn compile_program(program: &Program) -> Result<CompilationUnit, RuntimeErro
                 let env = BTreeMap::new();
                 let amount = eval_int(&p.amount, &env)?;
                 let policy = p.policy.as_ref().map(expr_to_string);
-                projection_seq = projection_seq.saturating_add(1);
+                projection_seq = projection_seq.checked_add(1).ok_or_else(|| {
+                    RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                        "projection identifier sequence overflow".to_string(),
+                    ))
+                })?;
                 let projection_id = format!("proj_{:03}", projection_seq);
                 ops.push(KernelOp::Project {
                     source: p.source.clone(),
@@ -214,39 +218,47 @@ pub fn compile_program(program: &Program) -> Result<CompilationUnit, RuntimeErro
     Ok(CompilationUnit { ops })
 }
 
-fn compute_auth_ratio(ctx: &Context) -> String {
-    let mut am = 1.0f64;
-    let mut ac = 1.0f64;
-    let mut ao = 1.0f64;
-    let mut ap = 1.0f64;
+fn auth_ratio_basis_points(ctx: &Context) -> u128 {
+    let mut am = 10_000u128;
+    let mut ac = 10_000u128;
+    let mut ao = 10_000u128;
+    let mut ap = 10_000u128;
 
     if let Some(Value::String(op)) = ctx.get("op") {
         if op.trim().is_empty() {
-            ap = 0.0;
+            ap = 0;
         }
     } else {
-        ap = 0.75;
+        ap = 7_500;
     }
 
     if let Some(Value::String(space)) = ctx.get("space") {
         if space.trim().is_empty() {
-            ac = 0.5;
+            ac = 5_000;
         }
     }
 
     if let Some(Value::String(risk)) = ctx.get("risk") {
         if risk == "high" {
-            ao = 0.8;
+            ao = 8_000;
         }
     }
 
     if ctx.fields.is_empty() {
-        am = 0.5;
-        ac = 0.5;
-        ao = 0.5;
-        ap = 0.5;
+        am = 5_000;
+        ac = 5_000;
+        ao = 5_000;
+        ap = 5_000;
     }
 
-    let ratio = 0.35 * am + 0.25 * ac + 0.25 * ao + 0.15 * ap;
-    format!("{ratio:.4}")
+    // Weighted basis-point average: 35% + 25% + 25% + 15% = 100%.
+    (3_500 * am + 2_500 * ac + 2_500 * ao + 1_500 * ap) / 10_000
+}
+
+fn format_auth_ratio(basis_points: u128) -> String {
+    format!("{}.{:04}", basis_points / 10_000, basis_points % 10_000)
+}
+
+fn compute_auth_ratio(ctx: &Context) -> String {
+    format_auth_ratio(auth_ratio_basis_points(ctx))
 }

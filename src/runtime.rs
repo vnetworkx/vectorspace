@@ -1,9 +1,9 @@
-use crate::compiler::{compile_program, expr_to_string};
+use crate::compiler::compile_program;
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::kernel::{execute_kernel_op, KernelOp};
 use crate::parser::parse;
 use crate::state::NetworkState;
-use crate::{ast::*, event::Event};
+use crate::ast::*;
 
 #[derive(Debug, Clone)]
 pub struct ExecutionReport {
@@ -169,4 +169,11 @@ fn resolve_projection_query(proj: &crate::state::ProjectionState, tail: &[&str])
 
 pub fn render_query_output(query: &str, value: &str) -> String {
     format!("{query} => {value}")
+}
+
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
 }

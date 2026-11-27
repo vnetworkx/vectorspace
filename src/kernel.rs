@@ -78,41 +78,66 @@ pub fn type_compatible_for_transfer(source: VectorType, destination: VectorType)
     )
 }
 
-fn component_allocation(components: &[u128], amount: u128) -> Vec<u128> {
-    let total: u128 = components.iter().copied().sum();
+fn component_allocation(components: &[u128], amount: u128) -> Result<Vec<u128>, RuntimeError> {
+    let total = components.iter().try_fold(0u128, |sum, component| {
+        sum.checked_add(*component).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector component total overflow".to_string(),
+            ))
+        })
+    })?;
     if total == 0 || amount == 0 {
-        return vec![0; components.len()];
+        return Ok(vec![0; components.len()]);
     }
 
     let mut floors = Vec::with_capacity(components.len());
     let mut remainders = Vec::with_capacity(components.len());
-
     let mut allocated = 0u128;
     for (idx, &component) in components.iter().enumerate() {
-        let numerator = amount.saturating_mul(component);
+        let numerator = amount.checked_mul(component).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation multiplication overflow".to_string(),
+            ))
+        })?;
         let floor = numerator / total;
         let rem = numerator % total;
         floors.push(floor);
         remainders.push((idx, rem));
-        allocated = allocated.saturating_add(floor);
+        allocated = allocated.checked_add(floor).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation total overflow".to_string(),
+            ))
+        })?;
     }
 
-    let mut remaining = amount.saturating_sub(allocated);
+    let mut remaining = amount.checked_sub(allocated).ok_or_else(|| {
+        RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "vector allocation exceeded requested amount".to_string(),
+        ))
+    })?;
     remainders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     for (idx, _) in remainders {
         if remaining == 0 {
             break;
         }
-        floors[idx] = floors[idx].saturating_add(1);
+        floors[idx] = floors[idx].checked_add(1).ok_or_else(|| {
+            RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                "vector allocation component overflow".to_string(),
+            ))
+        })?;
         remaining -= 1;
     }
-
-    floors
+    if remaining != 0 {
+        return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+            "vector allocation could not distribute the requested amount".to_string(),
+        )));
+    }
+    Ok(floors)
 }
 
 fn vector_subtract(components: &[u128], amount: u128) -> Result<Vec<u128>, RuntimeError> {
-    let allocation = component_allocation(components, amount);
+    let allocation = component_allocation(components, amount)?;
     let mut out = Vec::with_capacity(components.len());
     for (component, dec) in components.iter().zip(allocation.iter()) {
         if component < dec {
@@ -131,11 +156,17 @@ fn vector_add_strict(components: &[u128], addition: &[u128]) -> Result<Vec<u128>
             "vector dimensions must match".to_string(),
         )));
     }
-    Ok(components
+    components
         .iter()
         .zip(addition.iter())
-        .map(|(a, b)| a.saturating_add(*b))
-        .collect())
+        .map(|(a, b)| {
+            a.checked_add(*b).ok_or_else(|| {
+                RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "vector component addition overflow".to_string(),
+                ))
+            })
+        })
+        .collect()
 }
 
 fn canonical_record(
@@ -333,6 +364,16 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
             Ok(KernelResult { output: Some(format!("certify {target} -> {certified}")), record: Some(event) })
         }
         KernelOp::Transfer { source, destination, amount, drain, policy } => {
+            if source == destination {
+                return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "self-transfer is not supported".to_string(),
+                )));
+            }
+            if drain > amount {
+                return Err(RuntimeError::new(RuntimeErrorKind::InvalidOperation(
+                    "transfer drain cannot exceed transfer amount".to_string(),
+                )));
+            }
             let (source_type, dest_type, before_source, before_dest) = {
                 let source_vec = state
                     .vectors
@@ -364,8 +405,8 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
             }
 
             let after_source = vector_subtract(&before_source, amount)?;
-            let received_amount = amount.saturating_sub(drain);
-            let received = component_allocation(&before_source, received_amount);
+            let received_amount = amount - drain;
+            let received = component_allocation(&before_source, received_amount)?;
             let after_dest = vector_add_strict(&before_dest, &received)?;
 
             {
@@ -460,7 +501,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                     .ok_or_else(|| RuntimeError::new(RuntimeErrorKind::UnknownSymbol(source.clone())))?;
                 vec.components.clone()
             };
-            let locked = component_allocation(&before, amount);
+            let locked = component_allocation(&before, amount)?;
             let remainder = vector_subtract(&before, amount)?;
             {
                 let vec = state
@@ -597,5 +638,30 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 record: Some(event),
             })
         }
+    }
+}
+
+
+#[cfg(test)]
+mod arithmetic_regressions {
+    use super::{component_allocation, vector_add_strict};
+    use crate::error::RuntimeErrorKind;
+
+    #[test]
+    fn allocation_rejects_component_sum_overflow() {
+        let err = component_allocation(&[u128::MAX, 1], 1).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn allocation_rejects_multiplication_overflow() {
+        let err = component_allocation(&[u128::MAX], u128::MAX).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn vector_addition_rejects_overflow_instead_of_saturating() {
+        let err = vector_add_strict(&[u128::MAX], &[1]).unwrap_err();
+        assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
     }
 }

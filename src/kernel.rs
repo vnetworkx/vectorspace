@@ -187,10 +187,10 @@ fn canonical_record(
     certified: bool,
     actor_pk: &str,
     proof: &str,
-) -> Event {
+) -> Result<Event, RuntimeError> {
     let eid = format!("evt_{:016x}", state.events.len() + 1);
-    let logical_clock = state.next_clock();
-    let timestamp = derive_timestamp(logical_clock);
+    let logical_clock = state.next_clock()?;
+    let timestamp = derive_timestamp(logical_clock)?;
     let parent_hashes = state.last_event_hash.clone().into_iter().collect::<Vec<_>>();
     let provisional_signature = derive_signature(
         &format!("{eid}:{actor_pk}:{logical_clock}"),
@@ -252,7 +252,7 @@ fn canonical_record(
         timestamp,
         signature,
         event_hash,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,7 +268,7 @@ fn push_state_event(
     certified: bool,
     actor_pk: &str,
     proof: &str,
-) -> Event {
+ ) -> Result<Event, RuntimeError> {
     let event = canonical_record(
         state,
         entity_id,
@@ -281,12 +281,20 @@ fn push_state_event(
         certified,
         actor_pk,
         proof,
-    );
+    )?;
     state.push_event(event.clone());
-    event
+    Ok(event)
 }
 
 pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<KernelResult, RuntimeError> {
+    // Public single-operation execution is transactional as well as program execution.
+    let mut staged = state.clone();
+    let result = execute_kernel_op_inner(&mut staged, op)?;
+    *state = staged;
+    Ok(result)
+}
+
+fn execute_kernel_op_inner(state: &mut NetworkState, op: KernelOp) -> Result<KernelResult, RuntimeError> {
     match op {
         KernelOp::CreateVector { name, vector_type, components } => {
             if state.vectors.contains_key(&name) {
@@ -314,7 +322,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "origin-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("created {name}")), record: Some(event) })
         }
         KernelOp::BindWallet { name, public_key } => {
@@ -335,7 +343,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 &public_key,
                 "wallet-binding",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("wallet {name} bound")), record: Some(event) })
         }
         KernelOp::Certify { target, context, auth_ratio, certified } => {
@@ -367,7 +375,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 certified,
                 "kernel",
                 "certification-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("certify {target} -> {certified}")), record: Some(event) })
         }
         KernelOp::Transfer { source, destination, amount, drain, policy } => {
@@ -448,7 +456,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "transfer-proof",
-            );
+            )?
 
             let _dest_event = push_state_event(
                 state,
@@ -462,7 +470,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "transfer-proof",
-            );
+            )?
 
             Ok(KernelResult {
                 output: Some(format!("transfer {source}->{destination} amount={amount} drain={drain}")),
@@ -497,7 +505,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "drain-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("drain {target} amount={amount}")), record: Some(event) })
         }
         KernelOp::Project { source, environment, amount, policy, projection_id } => {
@@ -543,7 +551,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "project-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("project {source} -> {projection_id}")), record: Some(event) })
         }
         KernelOp::Reconstruct { target, projection_id } => {
@@ -588,7 +596,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "reconstruct-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("reconstruct {target} from {projection_id}")), record: Some(event) })
         }
         KernelOp::Query { expr } => Ok(KernelResult { output: Some(expr), record: None }),
@@ -616,7 +624,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "contract-proof",
-            );
+            )?
             Ok(KernelResult { output: Some(format!("contract {name} deployed")), record: Some(event) })
         }
         KernelOp::ContractAction { contract, action, args } => {
@@ -639,7 +647,7 @@ pub fn execute_kernel_op(state: &mut NetworkState, op: KernelOp) -> Result<Kerne
                 true,
                 "kernel",
                 "contract-action-proof",
-            );
+            )?
             Ok(KernelResult {
                 output: Some(format!("contract action {}::{}", contract_name, action)),
                 record: Some(event),
@@ -676,5 +684,32 @@ mod arithmetic_regressions {
     fn vector_addition_rejects_overflow_instead_of_saturating() {
         let err = vector_add_strict(&[u128::MAX], &[1]).unwrap_err();
         assert!(matches!(err.kind, RuntimeErrorKind::InvalidOperation(_)));
+    }
+}
+
+
+#[cfg(test)]
+mod atomic_single_operation_regressions {
+    use super::{execute_kernel_op, KernelOp};
+    use crate::ast::VectorType;
+    use crate::state::NetworkState;
+
+    #[test]
+    fn event_clock_overflow_does_not_leave_partial_operation_state() {
+        let mut state = NetworkState::new();
+        state.logical_clock = u64::MAX;
+        let before = state.clone();
+        let result = execute_kernel_op(
+            &mut state,
+            KernelOp::CreateVector {
+                name: "must-not-commit".to_string(),
+                vector_type: VectorType::Free,
+                components: vec![1, 2, 3],
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(state.vectors.len(), before.vectors.len());
+        assert_eq!(state.events.len(), before.events.len());
+        assert_eq!(state.logical_clock, before.logical_clock);
     }
 }

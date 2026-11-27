@@ -26,6 +26,8 @@ The language is not a separate source of truth. It is an interface to the kernel
 
 The kernel remains authoritative, and all live state is derived from immutable event history.
 
+> **Security boundary:** this repository's standalone event demo uses FNV-1a-128 for deterministic identifiers and placeholder `signature` fields. Those values are **not cryptographic signatures**, do not authenticate `actor_pk`, and must never be treated as collision-resistant proofs or protocol finality. The runtime is an in-memory language prototype, not a durable consensus ledger. Production authorization, signatures, replay protection, persistence, and finality belong to `vnetworkx/v-kernelx` and its Ed25519/consensus/storage layers.
+
 ---
 
 ## File extensions
